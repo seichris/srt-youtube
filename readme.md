@@ -1,0 +1,1 @@
+A chrome extension that lets you paste custom srt substitles for a youtube video. Works well with dual-sub extension.
