@@ -2,6 +2,7 @@ let subtitleCues = []; // Array of { start: seconds, end: seconds, text: string 
 let subtitleElement = null;
 let retryCount = 0;
 let currentVideoId = null;
+let isLoadingSubtitles = false;
 
 // Function to parse SRT text
 function parseSRT(srtText) {
@@ -27,14 +28,11 @@ function createSubtitleElement(video) {
   // Check if dual-sub extension is present
   let dualSubContainer = document.getElementById('dual-sub');
   
-  console.log('Dual-sub container found:', !!dualSubContainer);
   if (dualSubContainer) {
-    console.log('Dual-sub container HTML:', dualSubContainer.outerHTML.substring(0, 200) + '...');
     
     // Find the subtitle container within dual-sub
     let subtitleContainer = dualSubContainer.querySelector('#subtitle');
     if (!subtitleContainer) {
-      console.log('No #subtitle container found in dual-sub - dual-sub might be in error state');
       // If dual-sub exists but has no #subtitle, create one
       subtitleContainer = document.createElement('div');
       subtitleContainer.id = 'subtitle';
@@ -46,9 +44,7 @@ function createSubtitleElement(video) {
       const mainContainer = dualSubContainer.querySelector('[data-testid="SubtitleContainer"]');
       if (mainContainer) {
         mainContainer.appendChild(subtitleContainer);
-        console.log('Created #subtitle container in dual-sub');
       } else {
-        console.log('Could not find main subtitle container in dual-sub');
         return null;
       }
     }
@@ -56,7 +52,6 @@ function createSubtitleElement(video) {
     // Check if our subtitle already exists
     let existingSubtitle = subtitleContainer.querySelector('#srt-youtube-subtitle');
     if (existingSubtitle) {
-      console.log('SRT subtitle already exists, reusing it');
       // Return the existing text div
       return existingSubtitle.querySelector('.notranslate.text-selection');
     }
@@ -73,14 +68,11 @@ function createSubtitleElement(video) {
     
     // Add our subtitle as the last element in the subtitle container
     subtitleContainer.appendChild(ourSubtitleDiv);
-    console.log('Added SRT subtitles as last element in dual-sub #subtitle container');
-    console.log('Subtitle container now has', subtitleContainer.children.length, 'children');
     
     // Make sure the dual-sub container is visible (it might be hidden when no dual-sub subtitles exist)
     const computedStyle = window.getComputedStyle(dualSubContainer);
     if (computedStyle.display === 'none') {
       dualSubContainer.style.setProperty('display', 'block', 'important');
-      console.log('Made dual-sub container visible (overriding CSS with !important)');
     }
     
     retryCount = 0; // Reset retry count on success
@@ -120,7 +112,6 @@ function createSubtitleElement(video) {
     const videoContainer = video.closest('#movie_player') || video.parentElement;
     videoContainer.appendChild(srtSubDiv);
     
-    console.log('Created standalone SRT subtitle container');
     retryCount = 0; // Reset retry count on success
     return textDiv; // Return the text div for content updates
   }
@@ -134,10 +125,27 @@ function updateSubtitles(video, currentTime) {
 
 // Load subtitles for current video
 function loadSubtitles(attempt = 1) {
+  // Prevent multiple simultaneous calls
+  if (isLoadingSubtitles) {
+    return;
+  }
+  
   const video = document.querySelector('video');
-  if (!video) return console.log('No video element found');
+  if (!video) return;
 
-  console.log(`Loading subtitles (attempt ${attempt})`);
+  isLoadingSubtitles = true;
+  
+  // Check for video change FIRST and clear old subtitles immediately
+  const videoId = new URL(location.href).searchParams.get('v');
+  if (currentVideoId !== videoId) {
+    currentVideoId = videoId;
+    
+    // Clear old subtitles immediately
+    subtitleCues = [];
+    if (subtitleElement) {
+      subtitleElement.textContent = '';
+    }
+  }
   
   // Check if dual-sub might be loading by looking for any dual-sub related elements
   const dualSubExists = document.getElementById('dual-sub');
@@ -159,21 +167,8 @@ function loadSubtitles(attempt = 1) {
                              hasDualSubInStorage ||
                              isEarlyLoad;
   
-  console.log('Dual-sub detection:', {
-    dualSubExists: !!dualSubExists,
-    dualSubScripts: dualSubScripts.length,
-    hasExtensionElements: !!hasExtensionElements,
-    hasDualSubClasses: !!hasDualSubClasses,
-    hasDualSubInStorage: !!hasDualSubInStorage,
-    isEarlyLoad: isEarlyLoad,
-    documentReadyState: document.readyState,
-    hasDualSubExtension: !!hasDualSubExtension,
-    attempt: attempt
-  });
-
   // If we think dual-sub extension might be installed but container doesn't exist yet, wait
   if (!dualSubExists && (hasDualSubExtension || attempt <= 3) && attempt <= 8) {
-    console.log(`Dual-sub might be loading, waiting... (attempt ${attempt})`);
     setTimeout(() => loadSubtitles(attempt + 1), attempt <= 3 ? 2000 : 1000);
     return;
   }
@@ -182,39 +177,22 @@ function loadSubtitles(attempt = 1) {
   const existingElement = document.getElementById('srt-youtube-subtitle');
   if (existingElement) {
     existingElement.remove();
-    console.log('Removed existing SRT subtitle element');
   }
   
   // Also remove our standalone container if it exists (for when dual-sub is not present)
   const existingContainer = document.getElementById('srt-youtube-container');
   if (existingContainer) {
     existingContainer.remove();
-    console.log('Removed existing SRT standalone container');
   }
   
   subtitleElement = createSubtitleElement(video);
   
   // If createSubtitleElement returned null (dual-sub exists but not ready), don't proceed
   if (!subtitleElement) {
-    console.log('Subtitle element creation failed - will retry later');
+    isLoadingSubtitles = false;
     return;
   }
 
-  const videoId = new URL(location.href).searchParams.get('v');
-  
-  // Check if this is a new video
-  if (currentVideoId !== videoId) {
-    console.log(`Video changed from ${currentVideoId} to ${videoId}`);
-    currentVideoId = videoId;
-    
-    // Clear old subtitles immediately
-    subtitleCues = [];
-    if (subtitleElement) {
-      subtitleElement.textContent = '';
-      console.log('Cleared old subtitles for video change');
-    }
-  }
-  
   chrome.storage.local.get(`subtitles_${videoId}`, (data) => {
     const srt = data[`subtitles_${videoId}`];
     if (srt) {
@@ -222,16 +200,16 @@ function loadSubtitles(attempt = 1) {
       // Remove any existing timeupdate listeners to avoid duplicates
       video.removeEventListener('timeupdate', updateSubtitlesHandler);
       video.addEventListener('timeupdate', updateSubtitlesHandler);
-      console.log('Subtitles loaded and integrated');
     } else {
-      console.log('No subtitles found for this video');
       // Clear subtitles if no SRT file exists for this video
       subtitleCues = [];
       if (subtitleElement) {
         subtitleElement.textContent = '';
-        console.log('Cleared subtitles - no SRT file for this video');
       }
     }
+    
+    // Reset loading flag
+    isLoadingSubtitles = false;
   });
 }
 
@@ -272,10 +250,8 @@ function setupDualSubObserver() {
         ) && !removedNodes.some(isOurSubtitle);
         
         if (dualSubAdded) {
-          console.log('Dual-sub extension loaded, reloading subtitles to integrate...');
           setTimeout(() => loadSubtitles(1), 500); // Give dual-sub time to fully initialize
         } else if (dualSubRemoved) {
-          console.log('Dual-sub extension removed, reloading subtitles...');
           setTimeout(() => loadSubtitles(1), 100);
         }
       }
@@ -289,7 +265,6 @@ function setupDualSubObserver() {
       childList: true,
       subtree: true
     });
-    console.log('Dual-sub observer setup complete');
   }
 }
 
@@ -299,19 +274,47 @@ loadSubtitles();
 // Setup observer after a short delay to ensure page is loaded
 setTimeout(setupDualSubObserver, 1000);
 
-// Listen for URL changes (when user navigates to different videos)
+// URL change detection for video switching
 let lastUrl = location.href;
-function checkForUrlChange() {
-  if (location.href !== lastUrl) {
-    console.log('URL changed, reloading subtitles...');
-    lastUrl = location.href;
-    // Small delay to let the new video load
-    setTimeout(() => loadSubtitles(1), 500);
+
+setInterval(() => {
+  const currentUrl = location.href;
+  if (currentUrl !== lastUrl) {
+    lastUrl = currentUrl;
+    setTimeout(() => loadSubtitles(1), 200);
+  }
+}, 500);
+
+// Also try listening to browser navigation events
+window.addEventListener('popstate', () => {
+  setTimeout(() => loadSubtitles(1), 200);
+});
+
+// Listen for YouTube's custom events
+document.addEventListener('yt-navigate-start', () => {
+  // Navigation started
+});
+
+document.addEventListener('yt-navigate-finish', () => {
+  setTimeout(() => loadSubtitles(1), 200);
+});
+
+// Watch for changes in the video element itself
+function watchVideoChanges() {
+  const video = document.querySelector('video');
+  if (video) {
+    video.addEventListener('loadstart', () => {
+      setTimeout(() => loadSubtitles(1), 100);
+    });
+    
+    video.addEventListener('loadedmetadata', () => {
+      setTimeout(() => loadSubtitles(1), 100);
+    });
   }
 }
 
-// Check for URL changes every second
-setInterval(checkForUrlChange, 1000);
+// Setup video watching
+setTimeout(watchVideoChanges, 1000);
 
 // Periodic check for dual-sub in case it loads later
 let periodicCheckCount = 0;
@@ -322,13 +325,11 @@ const periodicCheck = setInterval(() => {
   
   // If dual-sub appeared and we have a standalone container, switch to integration
   if (dualSubExists && ourStandaloneExists) {
-    console.log('Dual-sub appeared after standalone creation, switching to integration...');
     loadSubtitles(1);
   }
   
   // Stop checking after 30 seconds
   if (periodicCheckCount >= 30) {
     clearInterval(periodicCheck);
-    console.log('Stopped periodic dual-sub checking');
   }
 }, 1000);
